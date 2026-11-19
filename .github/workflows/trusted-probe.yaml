@@ -1,0 +1,42 @@
+name: trusted-probe
+
+on:
+  push:
+    branches: [main]
+    tags: ["*"]
+  issue_comment:
+    types: [created]
+  repository_dispatch:
+    types: [plan-command]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  main-only-environment:
+    runs-on: ubuntu-latest
+    environment: main-only
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Print event context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_REF: ${{ github.ref }}
+          COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          CLIENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        run: |
+          echo "STEP_EXECUTED event=$EVENT_NAME ref=$RUN_REF"
+          echo "COMMENT user_type=$COMMENT_USER_TYPE body=$COMMENT_BODY"
+          echo "PAYLOAD $(printf '%s' "$CLIENT_PAYLOAD" | jq -c .)"
+      - name: Print OIDC claims
+        run: |
+          resp=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sandbox-check")
+          jwt=$(printf '%s' "$resp" | jq -r .value)
+          echo "::add-mask::$jwt"
+          payload=$(printf '%s' "$jwt" | cut -d. -f2 | tr '_-' '/+')
+          case $(( ${#payload} % 4 )) in 2) payload="$payload==";; 3) payload="$payload=";; esac
+          printf '%s' "$payload" | base64 -d | jq -c '{sub, ref, ref_type, event_name, head_ref, base_ref, environment, job_workflow_ref}' | sed 's/^/CLAIMS /'

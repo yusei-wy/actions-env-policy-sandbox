@@ -1,0 +1,77 @@
+name: pr-probe
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  no-environment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Print workflow definition marker
+        run: echo "MARKER main-definition"
+      - name: Print OIDC claims
+        run: |
+          resp=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sandbox-check")
+          jwt=$(printf '%s' "$resp" | jq -r .value)
+          echo "::add-mask::$jwt"
+          payload=$(printf '%s' "$jwt" | cut -d. -f2 | tr '_-' '/+')
+          case $(( ${#payload} % 4 )) in 2) payload="$payload==";; 3) payload="$payload=";; esac
+          printf '%s' "$payload" | base64 -d | jq -c '{sub, ref, ref_type, event_name, head_ref, base_ref, environment, job_workflow_ref}' | sed 's/^/CLAIMS /'
+
+  main-only-environment:
+    runs-on: ubuntu-latest
+    environment: main-only
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Print execution marker
+        run: echo "STEP_EXECUTED pull_request job entered main-only environment"
+      - name: Print OIDC claims
+        run: |
+          resp=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sandbox-check")
+          jwt=$(printf '%s' "$resp" | jq -r .value)
+          echo "::add-mask::$jwt"
+          payload=$(printf '%s' "$jwt" | cut -d. -f2 | tr '_-' '/+')
+          case $(( ${#payload} % 4 )) in 2) payload="$payload==";; 3) payload="$payload=";; esac
+          printf '%s' "$payload" | base64 -d | jq -c '{sub, ref, ref_type, event_name, head_ref, base_ref, environment, job_workflow_ref}' | sed 's/^/CLAIMS /'
+
+  forge-repository-dispatch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Send repository_dispatch with GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/dispatches" \
+            -d '{"event_type":"plan-command","client_payload":{"forged":true,"approved_sha":"0000000000000000000000000000000000000000"}}'
+          echo "DISPATCH_SENT"
+
+  comment-with-github-token:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post slash command with GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            -d '{"body":"/plan-check from-github-token"}' > /dev/null
+          echo "COMMENT_SENT"
